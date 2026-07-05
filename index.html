@@ -234,6 +234,7 @@ button:focus-visible{outline:2px solid var(--brass); outline-offset:2px;}
   <button id="copyb">Copy</button>
   <button id="clearb">Clear</button>
   <button id="soundb">Sound: on</button>
+  <button id="droneb">Drone: off</button>
   <button id="helpb">Grammar</button>
 </footer>
 <div id="toast"></div>
@@ -250,6 +251,7 @@ button:focus-visible{outline:2px solid var(--brass); outline-offset:2px;}
     <p><b>Breath</b> — lift all hands for the space between words.</p>
     <p><b>Key</b> — turn the ring between utterances; every turning is recorded as a modulation.</p>
     <p><b>Gates</b> — Open begins the record; Close seals the sitting; Name gilds the word that follows; a dwell upon Ain is deliberate silence (…).</p>
+    <p><b>The voice</b> — every character sounds at the pitch of its station, on the hijaz scale from a root of A. Turn the ring and the chimes transpose with the key; with practice, an eyes-closed sitting may be read by ear. The Drone holds the root beneath. Sound: off leaves the device's own music untouched.</p>
     <p><b>Eyes closed</b> — the board is veiled and the record hidden; only the chime confirms each sounding. Work by touch, and let the sitting reveal itself when it closes.</p>
     <p><b>Stream</b> — the dwell is lifted; every character the planchette crosses is sounded. Raw speech, to be parsed after, as the old circles did.</p>
     <p><b>Journal</b> — write your question above the record before you begin. When the sitting closes, question, key, mode, and record are kept together; add your notes upon them after.</p>
@@ -571,23 +573,25 @@ function register(cell){
   const mode=classify();
   if(cell.kind==="ain"){
     ensureLine().tokens.push({t:"ell"});
+    kindle(cell); chime([110],0.5,0.05); render(); resetSegAt(); return;
   } else if(cell.kind==="op"){
     const n=cell.n;
-    if(n==="Open"){openSession(); kindle(cell); tick(760); resetSegAt(); return;}
-    if(n==="Close"){closeSession(); kindle(cell); tick(520); resetSegAt(); return;}
+    if(n==="Open"){openSession(); kindle(cell); chime([220,330],0.18); resetSegAt(); return;}
+    if(n==="Close"){closeSession(); kindle(cell); chime([330,220],0.18); resetSegAt(); return;}
     if(n==="Name"){nameNext=true;}
     let echoed=null;
     if(n==="Echo"){echoed=grabWord();}
     ensureLine().tokens.push({t:"op",n});
     if(echoed&&echoed.length){cur.tokens.push({t:"sp"});echoed.forEach(w=>cur.tokens.push({...w}));}
+    kindle(cell); chime([330],0.14,0.05);
   } else {
     if(!sessionOpen)openSession();
     const s=sectorOf(letterAngle(cell.i));
     const tok={t:"ch",ch:cell.ch,el:s.key,mode,named:nameNext};
     ensureLine().tokens.push(tok);
     emphWatch={tok,at:performance.now()};
+    kindle(cell); chime([pitchFor(letterAngle(cell.i))],0.22,0.06);
   }
-  kindle(cell); tick(660);
   render(); resetSegAt();
 }
 function resetSegAt(){
@@ -598,7 +602,7 @@ function doSeal(){
   if(!l.tokens.length)return;
   l.tokens.push({t:"seal"});
   cur=null; nameNext=false;
-  tick(880); render();
+  chime([220,440],0.2,0.055); render();
 }
 function doNegate(){
   if(!cur||!cur.tokens.length)return;
@@ -607,7 +611,7 @@ function doNegate(){
   cur.tokens.pop();
   const f=el("circle",{cx:px,cy:py,r:40,fill:"none",stroke:"#c05050","stroke-width":3,class:"negflash"},fx);
   setTimeout(()=>f.remove(),520);
-  tick(300); render();
+  chime([104],0.12,0.07); render();
 }
 function wordBreak(){
   if(cur&&cur.tokens.length&&cur.tokens[cur.tokens.length-1].t!=="sp")
@@ -672,11 +676,63 @@ function serialize(list,full){
   return out;
 }
 /* ===== FX & SOUND ===== */
-const VERSION="Volvelle v1.4";
-function unlockAudio(){
+const VERSION="Volvelle v1.5";
+function unlockAudio(force){
+  if(!force&&!soundOn)return;   // Sound: off means the app never claims the audio session
   try{
     actx=actx||new (window.AudioContext||window.webkitAudioContext)();
     if(actx.state==="suspended")actx.resume();
+  }catch(e){}
+}
+/* hijaz scale over two octaves, root A (220 Hz) */
+const SCALE=[0,1,4,5,7,8,11,12,13,16,17,19,20,23,24];
+function snapSem(s){let best=SCALE[0],bd=99;for(const x of SCALE){const d=Math.abs(x-s);if(d<bd){bd=d;best=x;}}return best;}
+function pitchFor(angle){
+  const a=((angle%360)+360)%360;
+  return 220*Math.pow(2,snapSem(a/360*24)/12);
+}
+function chime(freqs,dur,gain){
+  if(!soundOn||!actx)return;
+  dur=dur||0.16; gain=gain||0.055;
+  try{
+    freqs.forEach((f,i)=>{
+      const t0=actx.currentTime+i*0.09;
+      const o=actx.createOscillator(), o2=actx.createOscillator();
+      const g=actx.createGain(), g2=actx.createGain();
+      o.type="sine"; o.frequency.value=f;
+      o2.type="sine"; o2.frequency.value=f*2; g2.gain.value=.22;
+      o.connect(g); o2.connect(g2).connect(g); g.connect(actx.destination);
+      g.gain.setValueAtTime(gain,t0);
+      g.gain.exponentialRampToValueAtTime(.0001,t0+dur);
+      o.start(t0);o2.start(t0);o.stop(t0+dur+.03);o2.stop(t0+dur+.03);
+    });
+  }catch(e){}
+}
+function tick(f){chime([f],0.1,0.05);}
+/* the drone: a held root beneath the chimes */
+let drone=null;
+function droneToggle(){
+  const b=document.getElementById("droneb");
+  if(drone){
+    try{
+      drone.g.gain.setTargetAtTime(0.0001,actx.currentTime,0.5);
+      const d=drone; setTimeout(()=>{d.oscs.forEach(o=>{try{o.stop();}catch(e){}});},1600);
+    }catch(e){}
+    drone=null; b.textContent="Drone: off"; return;
+  }
+  if(!soundOn){toast("Wake the sound first");return;}
+  unlockAudio(true);
+  if(!actx)return;
+  try{
+    const g=actx.createGain(); g.gain.value=0.0001; g.connect(actx.destination);
+    const mk=(f,v)=>{const o=actx.createOscillator();o.type="sine";o.frequency.value=f;
+      const og=actx.createGain();og.gain.value=v;o.connect(og).connect(g);o.start();return o;};
+    const oscs=[mk(110,1),mk(110.6,.8),mk(164.8,.25),mk(220,.18)];
+    const lfo=actx.createOscillator(), lg=actx.createGain();
+    lfo.frequency.value=0.08; lg.gain.value=0.009;
+    lfo.connect(lg).connect(g.gain); lfo.start(); oscs.push(lfo);
+    g.gain.setTargetAtTime(0.028,actx.currentTime,1.2);
+    drone={g,oscs}; b.textContent="Drone: on";
   }catch(e){}
 }
 let emphWatch=null;
@@ -688,18 +744,6 @@ function resolveEmph(){
 function kindle(cell){
   const k=el("circle",{cx:cell.x,cy:cell.y,r:14,fill:"none",stroke:"var(--ember)","stroke-width":3,class:"kindle"},fx);
   setTimeout(()=>k.remove(),650);
-}
-function tick(f){
-  if(!soundOn)return;
-  try{
-    actx=actx||new (window.AudioContext||window.webkitAudioContext)();
-    const o=actx.createOscillator(),g=actx.createGain();
-    o.type="sine";o.frequency.value=f;
-    g.gain.setValueAtTime(.06,actx.currentTime);
-    g.gain.exponentialRampToValueAtTime(.0001,actx.currentTime+.09);
-    o.connect(g).connect(actx.destination);
-    o.start();o.stop(actx.currentTime+.1);
-  }catch(e){}
 }
 /* ===== POINTERS ===== */
 function centroid(){
@@ -1138,7 +1182,10 @@ document.getElementById("clearb").onclick=()=>{
 };
 document.getElementById("soundb").onclick=function(){
   soundOn=!soundOn;this.textContent="Sound: "+(soundOn?"on":"off");
+  if(soundOn)unlockAudio(true);
+  else if(drone)droneToggle();
 };
+document.getElementById("droneb").onclick=droneToggle;
 document.getElementById("helpb").onclick=()=>document.getElementById("help").classList.add("open");
 document.getElementById("helpx").onclick=()=>document.getElementById("help").classList.remove("open");
 function toast(msg){
